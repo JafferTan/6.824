@@ -24,10 +24,10 @@ import (
 	"time"
 )
 import "sync/atomic"
-import "6.824/src/labrpc"
+import "../labrpc"
 
 import "bytes"
-import "6.824/src/labgob"
+import "../labgob"
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -162,10 +162,7 @@ func (rf *Raft) run() {
 			status := rf.status
 			rf.mu.Unlock()
 			if status == Leader {
-				//go rf.doLeaderShip()
-				//time.Sleep(5*time.Millisecond)
 				rf.doLogAppendJob()
-				//time.Sleep(100 *time.Millisecond)
 			} else if status == candidate {
 				rf.docandidateProcess()
 			} else if status == Follower {
@@ -175,9 +172,8 @@ func (rf *Raft) run() {
 	}
 }
 func (rf *Raft) doFollower() {
-	//rand.Seed(int64(rf.me))
-	rand.Seed(time.Now().Unix() + int64(rf.me))
-	base := 150 + rand.Intn(150)
+	rand.Seed(time.Now().Unix() + int64(rf.me)*time.Now().Unix())
+	base := 150 + rand.Intn(149)
 	s := time.Duration(base) * time.Millisecond
 	for rf.killed() == false {
 		select {
@@ -200,16 +196,16 @@ func (rf *Raft) doFollower() {
 				rf.mu.Unlock()
 			}
 		case <-time.After(s):
-			rf.mu.Lock()
-			rf.status = candidate
-			rf.mu.Unlock()
+			//rf.mu.Lock()
+			//rf.status = candidate
+			//rf.mu.Unlock()
+			rf.doPreVoteProcess()
 			return
 		}
 	}
 }
 func (rf *Raft) docandidateProcess() {
-	//rand.Seed(int64(rf.me))
-	rand.Seed(time.Now().Unix() + int64(rf.me))
+	rand.Seed(time.Now().Unix() + int64(rf.me)*time.Now().Unix())
 	base := 150 + rand.Intn(149)
 	s := time.Duration(base) * time.Millisecond
 	//时间信息 取消线程信息
@@ -224,7 +220,6 @@ func (rf *Raft) docandidateProcess() {
 	rf.persist()
 	rf.mu.Unlock()
 	var lock sync.Mutex
-	//fmt.Printf("%d主机进入了任期%d选举流程\n",rf.me,cTerm)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -232,6 +227,7 @@ func (rf *Raft) docandidateProcess() {
 		go func(index int) {
 			rf.mu.Lock()
 			lastLogIndex := len(rf.log) - 1
+			//lastLogIndex := rf.lastApplied
 			args := &RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: rf.log[lastLogIndex].LogTerm}
 			reply := &RequestVoteReply{}
 			rf.mu.Unlock()
@@ -252,10 +248,10 @@ func (rf *Raft) docandidateProcess() {
 							if j == rf.me {
 								continue
 							}
+							minIndex := args.LastLogIndex + 1
+							rf.log = rf.log[:minIndex]
 							rf.nextIndex[j] = len(rf.log)
-							rf.matchIndex[j] = rf.nextIndex[j] - 1
-							//rf.matchIndex[j] = rf.lastApplied
-							//rf.nextIndex[j] = rf.matchIndex[j]+1
+							rf.matchIndex[j] = 0
 						}
 						rf.termLeaderId = rf.me
 						//rf.persist()
@@ -282,7 +278,55 @@ func (rf *Raft) docandidateProcess() {
 }
 
 //变成了leader就需要周期性给peers发心跳包
-
+func (rf *Raft) doPreVoteProcess() {
+	rand.Seed(time.Now().Unix() + int64(rf.me)*time.Now().Unix())
+	base := 150 + rand.Intn(149)
+	s := time.Duration(base) * time.Millisecond
+	//时间信息 取消线程信息
+	vote := 1
+	var lock sync.Mutex
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		go func(index int) {
+			rf.mu.Lock()
+			lastLogIndex := len(rf.log) - 1
+			args := &RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: rf.log[lastLogIndex].LogTerm}
+			reply := &RequestVoteReply{}
+			rf.mu.Unlock()
+			res := rf.sendPreRequestVote(index, args, reply)
+			if res == true {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				lock.Lock()
+				defer lock.Unlock()
+				if reply.VoteGranted == true && args.Term == rf.currentTerm {
+					vote++
+					if vote >= len(rf.peers)/2+1 {
+						rf.status = candidate
+						//rf.persist()
+						rf.channel <- candidate
+						return
+					}
+				} else {
+					if reply.Term > rf.currentTerm {
+						rf.currentTerm = reply.Term
+						rf.status = Follower
+						rf.persist()
+						rf.channel <- Follower
+					}
+				}
+			}
+		}(i)
+	}
+	select {
+	case <-rf.channel:
+		return
+	case <-time.After(s):
+		return
+	}
+}
 func (rf *Raft) doLogAppendJob() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -290,6 +334,10 @@ func (rf *Raft) doLogAppendJob() {
 		}
 		go func(index int) {
 			rf.mu.Lock()
+			if rf.status != Leader {
+				rf.mu.Unlock()
+				return
+			}
 			args := &AppendEntriesArgs{Term: rf.currentTerm,
 				LeaderID:          rf.me,
 				PrevLogIndex:      rf.log[rf.nextIndex[index]-1].LogIndex,
@@ -303,7 +351,6 @@ func (rf *Raft) doLogAppendJob() {
 				log = append(log, rf.log[j])
 			}
 			args.Log = log
-			//fmt.Printf("leader发送的包结构为%+v\n",args)
 			rf.mu.Unlock()
 			res := rf.sendLogEntries(index, args, reply)
 			if res == true {
@@ -312,10 +359,6 @@ func (rf *Raft) doLogAppendJob() {
 				if reply.Success == true && rf.status == Leader && args.Term == rf.currentTerm {
 					rf.nextIndex[index] = max(rf.nextIndex[index], LogLen)
 					rf.matchIndex[index] = max(rf.matchIndex[index], LogLen-1)
-					//rf.matchIndex[index] = args.PrevLogIndex + len(args.Log)
-					//rf.nextIndex[index] = rf.matchIndex[index]+1
-					//go rf.checkN()
-
 					rf.checkN()
 				} else if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
@@ -333,7 +376,7 @@ func (rf *Raft) doLogAppendJob() {
 							rf.nextIndex[index] -= 1
 						}
 					}
-					//rf.nextIndex[index] = reply.lastApplied
+
 				}
 			}
 		}(i)
@@ -341,7 +384,7 @@ func (rf *Raft) doLogAppendJob() {
 	select {
 	case <-rf.channel:
 		return
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(70 * time.Millisecond):
 		return
 	}
 }
@@ -374,7 +417,7 @@ func (rf *Raft) checkN() {
 		for j := 0; j < len(rf.peers); j++ {
 			if rf.matchIndex[j] >= i {
 				vote++
-				if vote >= len(rf.peers)/2+1 && rf.currentTerm == rf.log[i].LogTerm {
+				if vote >= len(rf.peers)/2+1 {
 					rf.commitIndex = i + 1
 					break
 				}
@@ -385,7 +428,7 @@ func (rf *Raft) checkN() {
 		rf.lastApplied = i
 		am := ApplyMsg{CommandValid: true, Command: rf.log[rf.lastApplied].LogCommand, CommandIndex: rf.log[rf.lastApplied].LogIndex}
 		rf.applymsg <- am
-		//fmt.Println("leader提交日志index",am.CommandIndex,rf.log[i].LogTerm,rf.currentTerm)
+		//fmt.Println("Leader",rf.me,"任期",rf.currentTerm,"提交日志",am.CommandIndex,"日志任期",rf.log[am.CommandIndex])
 	}
 	//go rf.doLogAppendJob()
 	rf.persist()
@@ -408,6 +451,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.log = append(rf.log, log) //添加log
 	index = log.LogIndex
 	term = log.LogTerm
+	rf.persist()
 	rf.channel <- Log
 	return index, term, isLeader
 }
@@ -419,30 +463,38 @@ func (rf *Raft) LogEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	//用于判断日志的
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//fmt.Printf("follower%d在任期%d接受了来自%d的日志包任期为%d\n",rf.me,rf.currentTerm,args.LeaderID,args.Term)
 	if args.Term >= rf.currentTerm && args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].LogTerm && args.PrevLogIndex == rf.log[args.PrevLogIndex].LogIndex {
 		reply.Term = args.Term
 		rf.currentTerm = args.Term
 		rf.termLeaderId = args.LeaderID
 		rf.status = Follower
-		//fmt.Println("follower",rf.me,"在任期",rf.currentTerm,"接受了的包结构为任期为%",args.Term,"commitIndex：",args.LeaderCommitIndex,"preLogIndex：",args.PrevLogIndex,"lastIndex",rf.lastApplied,"包中有日志:",len(args.Log))
+		//fmt.Printf("follower%d在任期%d接受了来自%d的日志包长度为%d,他的日志长度为%d,lastApplied为%d,LeadercommitIndex为%d,args.PrevLogIndex为%d\n",rf.me,rf.currentTerm,args.LeaderID,len(args.Log),len(rf.log),rf.lastApplied,args.LeaderCommitIndex,args.PrevLogIndex)
 		last := args.PrevLogIndex
-		//lastLogIndex := len(rf.log)-1
 		for i := 0; i < len(args.Log); i++ {
-			if last+i+1 < len(rf.log) {
-				rf.log[last+i+1] = args.Log[i]
+			temp := last + i + 1
+			if temp < len(rf.log) {
+				if rf.lastApplied < temp {
+					rf.log[temp] = args.Log[i]
+				}
 			} else {
 				rf.log = append(rf.log, args.Log[i])
 			}
 		}
-		//fmt.Println("follower",rf.me,rf.log)
+		if args.PrevLogIndex+len(args.Log)+1 < len(rf.log) {
+			index := args.PrevLogIndex + len(args.Log) + 1
+			if rf.log[index].LogTerm < rf.log[index-1].LogTerm {
+				rf.log = rf.log[:index]
+			}
+		}
+		//fmt.Printf("follower%d在任期%d的日志结构为%+v\n",rf.me,rf.currentTerm,rf.log)
 		if args.LeaderCommitIndex > rf.commitIndex {
 			rf.commitIndex = min(len(rf.log), args.LeaderCommitIndex)
 			for i := rf.lastApplied + 1; i < rf.commitIndex; i++ {
 				rf.lastApplied = i
-				am := ApplyMsg{CommandValid: true, Command: rf.log[rf.lastApplied].LogCommand, CommandIndex: rf.lastApplied}
+				am := ApplyMsg{CommandValid: true, Command: rf.log[rf.lastApplied].LogCommand, CommandIndex: rf.log[rf.lastApplied].LogIndex}
 				rf.applymsg <- am
-				//fmt.Println("follower",rf.me,"提交日志index",am.CommandIndex)
-				//fmt.Println("follower",rf.me,"提交日志index",am.CommandIndex,rf.log[i].LogTerm,rf.currentTerm)
+				//fmt.Println("Follower",rf.me,"任期",rf.currentTerm,"提交日志",am.CommandIndex,"日志任期",rf.log[am.CommandIndex])
 			}
 		}
 		reply.Success = true
@@ -464,31 +516,61 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("%d收到了来自%d在任期%d的投票请求\n",rf.me,args.CandidateId,args.Term)
 	if rf.currentTerm <= args.Term {
 		reply.Term = args.Term
 		_, ok := rf.right[args.Term]
 		lastLog := rf.log[len(rf.log)-1]
 		if ok == false && lastLog.LogTerm < args.LastLogTerm {
-			//fmt.Printf("%d投票给%d\n",rf.me,args.CandidateId)
+			//fmt.Printf("%d收到了来自%d在任期%d的投票请求,lastLog.LogTerm为%d,args.lastLogTerm为%d\n",rf.me,args.CandidateId,args.Term,lastLog.LogTerm,args.LastLogTerm)
+			rf.currentTerm = args.Term
 			rf.right[args.Term] = false
+			minIndex := min(args.LastLogIndex+1, len(rf.log))
+			rf.log = rf.log[:minIndex]
 			reply.VoteGranted = true
 			rf.status = Follower
 			rf.persist()
 			rf.channel <- candidate
 		} else if ok == false && lastLog.LogTerm == args.LastLogTerm && lastLog.LogIndex <= args.LastLogIndex {
-			//fmt.Printf("%d投票给%d\n",rf.me,args.CandidateId)
+			//fmt.Printf("%d收到了来自%d在任期%d的投票请求,lastLog.LogTerm为%d,args.lastLogTerm为%d,lastLog.LogIndex为%d,args.lastLogIndex为%d\n",rf.me,args.CandidateId,args.Term,lastLog.LogTerm,args.LastLogTerm,lastLog.LogIndex,args.LastLogIndex)
+			rf.currentTerm = args.Term
 			rf.right[args.Term] = false
 			reply.VoteGranted = true
+			minIndex := min(args.LastLogIndex+1, len(rf.log))
+			rf.log = rf.log[:minIndex]
 			rf.status = Follower
 			rf.persist()
 			rf.channel <- candidate
 		} else {
-			//fmt.Printf("%d没有投票给%d\n",rf.me,args.CandidateId)
+			rf.currentTerm = args.Term
+			rf.status = Follower
+			rf.persist()
+			//fmt.Printf("%d收到了来自%d在任期%d的投票请求但他没有投票\n",rf.me,args.CandidateId,args.Term)
 			reply.VoteGranted = false
 		}
 	} else {
-		//fmt.Printf("%d没有投票给%d\n",rf.me,args.CandidateId)
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+	}
+}
+func (rf *Raft) sendPreRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.PreRequestVote", args, reply)
+	return ok
+}
+func (rf *Raft) PreRequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.currentTerm <= args.Term {
+		reply.Term = args.Term
+		lastLog := rf.log[len(rf.log)-1]
+		if lastLog.LogTerm < args.LastLogTerm {
+			reply.VoteGranted = true
+		} else if lastLog.LogTerm == args.LastLogTerm && lastLog.LogIndex <= args.LastLogIndex {
+			reply.VoteGranted = true
+		} else {
+			reply.VoteGranted = false
+		}
+	} else {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
@@ -524,10 +606,10 @@ func (rf *Raft) persist() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
-	//e.Encode(rf.lastApplied)
+	e.Encode(rf.lastApplied)
 	e.Encode(rf.log)
 	e.Encode(rf.right)
-	//e.Encode(rf.commitIndex)
+	e.Encode(rf.commitIndex)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -544,21 +626,20 @@ func (rf *Raft) readPersist(data []byte) {
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentTerm int
-	//var lastApplied int
+	var lastApplied int
 	var log []LogEntry
 	var right map[int]bool
-	//var commitIndex int
+	var commitIndex int
 	d.Decode(&currentTerm)
-	//d.Decode(&lastApplied)
+	d.Decode(&lastApplied)
 	d.Decode(&log)
 	d.Decode(&right)
-	//d.Decode(&commitIndex)
+	d.Decode(&commitIndex)
 	rf.currentTerm = currentTerm
-	//rf.lastApplied = lastApplied
+	rf.lastApplied = lastApplied
 	rf.log = log
-	//rf.commitIndex = commitIndex
+	rf.commitIndex = commitIndex
 	rf.right = right
-	//fmt.Println(rf.me,"反持久化")
 }
 
 //
