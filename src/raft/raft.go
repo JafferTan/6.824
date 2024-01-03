@@ -19,15 +19,14 @@ package raft
 //
 
 import (
+	"6.824/src/labgob"
+	"6.824/src/labrpc"
+	"bytes"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
-import "sync/atomic"
-import "../labrpc"
-
-import "bytes"
-import "../labgob"
 
 //
 // as each Raft peer becomes aware that successive log entries are
