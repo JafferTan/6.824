@@ -155,7 +155,7 @@ func (rf *Raft) run() {
 	case <-rf.killChannel:
 		return
 	default:
-		for rf.killed() == false {
+		for rf.Killed() == false {
 			//在这里判断状态
 			rf.mu.Lock()
 			status := rf.status
@@ -174,7 +174,7 @@ func (rf *Raft) doFollower() {
 	rand.Seed(time.Now().Unix() + int64(rf.me)*time.Now().Unix())
 	base := 150 + rand.Intn(149)
 	s := time.Duration(base) * time.Millisecond
-	for rf.killed() == false {
+	for rf.Killed() == false {
 		select {
 		case status := <-rf.channel:
 			if status == candidate {
@@ -433,6 +433,10 @@ func (rf *Raft) checkN() {
 	rf.persist()
 	//go rf.doLogAppendJob()
 }
+func (rf *Raft) sendLogEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.LogEntries", args, reply)
+	return ok
+}
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
@@ -453,10 +457,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 	rf.channel <- Log
 	return index, term, isLeader
-}
-func (rf *Raft) sendLogEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.LogEntries", args, reply)
-	return ok
 }
 func (rf *Raft) LogEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	//用于判断日志的
@@ -682,17 +682,16 @@ func (rf *Raft) readPersist(data []byte) {
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
 //
+func (rf *Raft) Killed() bool {
+	z := atomic.LoadInt32(&rf.dead)
+	return z == 1
+}
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	rf.killChannel <- true
 	//rf.mu.Lock()
 	rf.channel <- Log
-}
-
-func (rf *Raft) killed() bool {
-	z := atomic.LoadInt32(&rf.dead)
-	return z == 1
 }
 
 //
