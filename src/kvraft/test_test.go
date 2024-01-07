@@ -1,7 +1,7 @@
 package kvraft
 
-import "../porcupine"
-import "../models"
+import "6.824/src/porcupine"
+import "6.824/src/models"
 import "testing"
 import "strconv"
 import "time"
@@ -27,6 +27,7 @@ func Get(cfg *config, ck *Clerk, key string) string {
 }
 
 func Put(cfg *config, ck *Clerk, key string, value string) {
+
 	ck.Put(key, value)
 	cfg.op()
 }

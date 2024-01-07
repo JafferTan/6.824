@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"../labgob"
-	"../labrpc"
+	"6.824/src/labgob"
+	"6.824/src/labrpc"
+	"6.824/src/raft"
+	"fmt"
 	"log"
-	"../raft"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = 0
@@ -18,11 +20,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key       string
+	Value     string
+	Op        string
+	ClientId  int64
+	CommandId int
 }
 
 type KVServer struct {
@@ -35,15 +41,84 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	db                 map[string]string
+	applyResChannelMap map[int]chan applyResChannel
+	clientCommandMap   map[int64]int
 }
-
+type applyResChannel struct {
+	Err   Err
+	Key   string
+	Value string
+	Index int
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	fmt.Printf("%d节点收到了get请求\n", kv.me)
+	kv.mu.Lock()
+	op := Op{Key: args.Key, Op: GET}
+	commandId := args.CommandId
+	lastCommandId := kv.clientCommandMap[args.ClientId]
+	if lastCommandId >= commandId {
+		reply.Err = OK
+		reply.Value = kv.db[args.Key]
+		kv.mu.Unlock()
+		return
+	}
+	fmt.Printf("%d节点收到了将请求发向raft层\n", kv.me)
+	index, _, isLeader := kv.rf.Start(op)
+	fmt.Printf("%d节点收到了将请求发向raft层完毕\n", kv.me)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	applyResChannel := make(chan applyResChannel, 1)
+	kv.applyResChannelMap[index] = applyResChannel
+	kv.mu.Unlock()
+	select {
+	case res := <-applyResChannel:
+		reply.Err = OK
+		reply.Value = res.Value
+		fmt.Printf("%d号节点在(index:%d)的操作%v,回复是(res:%v)\n", kv.me, index, args, res)
+	case <-time.After(500 * time.Microsecond):
+		reply.Err = ErrTimeout
+		fmt.Printf("%d号节点超时没有回复\n", kv.me)
+	}
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	fmt.Printf("%d节点收到了PutAppend请求\n", kv.me)
+	kv.mu.Lock()
+	op := Op{Key: args.Key, Op: args.Op, Value: args.Value, ClientId: args.ClientId, CommandId: args.CommandId}
+	commandId := args.CommandId
+	lastCommandId := kv.clientCommandMap[args.ClientId]
+	if lastCommandId >= commandId {
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	}
+	fmt.Printf("%d节点收到了将请求发向raft层\n", kv.me)
+	index, _, isLeader := kv.rf.Start(op)
+	fmt.Printf("%d节点收到了将请求发向raft层完毕\n", kv.me)
+
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	applyResChannel := make(chan applyResChannel, 1)
+	kv.applyResChannelMap[index] = applyResChannel
+	kv.mu.Unlock()
+	select {
+	case res := <-applyResChannel:
+		fmt.Printf("%d号节点在(index:%d)的操作%v,回复是(res:%v)\n", kv.me, index, args, res)
+		reply.Err = OK
+	case <-time.After(500 * time.Microsecond):
+		reply.Err = ErrTimeout
+		fmt.Printf("%d号节点超时没有回复\n", kv.me)
+	}
 }
 
 //
@@ -96,6 +171,71 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.db = make(map[string]string)
+	kv.applyResChannelMap = make(map[int]chan applyResChannel)
+	kv.clientCommandMap = make(map[int64]int)
+	go kv.readMsgFromRaft()
 	return kv
+}
+func (kv *KVServer) readMsgFromRaft() {
+	for !kv.rf.Killed() {
+		select {
+		case applyMsg := <-kv.applyCh:
+			if applyMsg.CommandValid == true {
+				kv.doNotifyJob(applyMsg)
+				//fmt.Printf("%d节点收到了applyMsg:%v\n", kv.me, applyMsg)
+			}
+		}
+	}
+	// Your code here, if desired.
+}
+
+func (kv *KVServer) doNotifyJob(applyMsg raft.ApplyMsg) {
+	kv.mu.Lock()
+	op, _ := applyMsg.Command.(Op)
+	clientId := op.ClientId
+	commandId := op.CommandId
+	if kv.clientCommandMap[clientId] >= commandId {
+		kv.mu.Unlock()
+		return
+	}
+	index := applyMsg.CommandIndex
+	key := op.Key
+	res := applyResChannel{}
+	if op.Op == GET {
+		value := kv.db[key]
+
+		res.Key = key
+		res.Value = value
+		res.Err = OK
+		res.Index = index
+	} else if op.Op == PUT {
+		kv.db[key] = op.Value
+
+		res.Key = key
+		res.Value = op.Value
+		res.Err = OK
+		res.Index = index
+	} else if op.Op == APPEND {
+		value := kv.db[key]
+		newValue := value + op.Value
+		kv.db[key] = newValue
+
+		res.Key = key
+		res.Value = newValue
+		res.Err = OK
+		res.Index = index
+	}
+	last := kv.clientCommandMap[op.ClientId]
+	if last < commandId {
+		kv.clientCommandMap[op.ClientId] = commandId
+	}
+	_, isLeader := kv.rf.GetState()
+	if isLeader {
+		channel := kv.applyResChannelMap[index]
+		fmt.Printf("%d号节点给(index:%d)的操作%v,进行回复(res:%v),目前map结构为%v\n", kv.me, index, op, res, kv.db)
+		channel <- res
+	}
+	kv.mu.Unlock()
+
 }
