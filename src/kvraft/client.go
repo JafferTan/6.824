@@ -2,7 +2,6 @@ package kvraft
 
 import (
 	"6.824/src/labrpc"
-	"fmt"
 )
 import "crypto/rand"
 import "math/big"
@@ -57,7 +56,7 @@ func (ck *Clerk) Get(key string) string {
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 			i = (i + 1) % len(ck.servers)
-			fmt.Printf("客户端get选取下一个节点%d进行rpc\n", i)
+			//fmt.Printf("客户端get选取下一个节点%d进行rpc\n", i)
 			continue
 		}
 		ck.leaderId = i
@@ -96,7 +95,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 			i = (i + 1) % len(ck.servers)
-			fmt.Printf("客户端put选取下一个节点%d进行rpc\n", i)
+			//fmt.Printf("客户端put选取下一个节点%d进行rpc\n", i)
 			continue
 		}
 		ck.leaderId = i
