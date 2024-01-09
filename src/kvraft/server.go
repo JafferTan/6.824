@@ -4,7 +4,6 @@ import (
 	"6.824/src/labgob"
 	"6.824/src/labrpc"
 	"6.824/src/raft"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -96,11 +95,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	fmt.Printf("%d节点收到了PutAppend请求\n", kv.me)
+	//fmt.Printf("%d节点收到了PutAppend请求\n", kv.me)
 	kv.mu.Lock()
 	op := Op{Key: args.Key, Op: args.Op, Value: args.Value, ClientId: args.ClientId, CommandId: args.CommandId}
 	commandId := args.CommandId
-	if lastCommand, ok := kv.clientCommandMap[args.ClientId]; ok && lastCommand.CommandId == commandId {
+	if lastCommand, ok := kv.clientCommandMap[args.ClientId]; ok && lastCommand.CommandId >= commandId {
 		reply.Err = lastCommand.applyResChannel.Err
 		kv.mu.Unlock()
 		return
@@ -175,7 +174,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg, 1000)
+	kv.applyCh = make(chan raft.ApplyMsg, 2000)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
@@ -234,9 +233,9 @@ func (kv *KVServer) doNotifyJob(applyMsg raft.ApplyMsg) {
 		res.Err = OK
 		res.Index = index
 	}
-	kv.clientCommandMap[op.ClientId] = CommandRes{CommandId: commandId, applyResChannel: res}
-	kv.mu.Unlock()
 	if chanRes, ok := kv.applyResChannelMap[index]; ok {
 		chanRes <- res
 	}
+	kv.clientCommandMap[op.ClientId] = CommandRes{CommandId: commandId, applyResChannel: res}
+	kv.mu.Unlock()
 }
