@@ -174,11 +174,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg, 2000)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
+	kv.applyCh = make(chan raft.ApplyMsg, 10000)
 	kv.db = make(map[string]string)
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	// You may need initialization code here.
+	kv.rf.ReadDBStausFromRaft()
 	kv.applyResChannelMap = make(map[int]chan ApplyResChannel)
 	kv.clientCommandMap = make(map[int64]CommandRes)
 	go kv.readMsgFromRaft()
