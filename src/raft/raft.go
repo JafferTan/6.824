@@ -124,7 +124,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0                  //将任期置0
-	rf.channel = make(chan int, 50)     //接受通知
+	rf.channel = make(chan int, 1000)   //接受通知
 	rf.right = make(map[int]bool)       //投票器
 	rf.killChannel = make(chan bool, 1) //投票器
 	//日志相关
@@ -147,6 +147,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//rf.readPersist(persister.ReadRaftState())
 	go rf.run()
 	return rf
+}
+func (rf *Raft) ReadDBStausFromRaft() {
+	for i := 0; i <= rf.lastApplied; i++ {
+		rf.lastApplied = i
+		am := ApplyMsg{CommandValid: true, Command: rf.log[i].LogCommand, CommandIndex: rf.log[i].LogIndex}
+		rf.applymsg <- am
+	}
 }
 
 //goRoutine
@@ -442,10 +449,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := false
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.status == Leader && rf.termLeaderId == rf.me {
 		isLeader = true
 	} else {
+		rf.mu.Unlock()
 		return index, term, false
 	}
 	//初始化log
@@ -454,7 +461,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.log = append(rf.log, log) //添加log
 	index = log.LogIndex
 	term = log.LogTerm
-	rf.persist()
+	//rf.persist()
+	rf.mu.Unlock()
 	rf.channel <- Log
 	return index, term, isLeader
 }
